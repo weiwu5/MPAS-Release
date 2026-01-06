@@ -12,14 +12,22 @@ OBJS =  \
 	mpas_init_atm_hinterp.o \
 	mpas_init_atm_static.o \
 	mpas_init_atm_gwd.o \
+	mpas_gsl_oro_data_sm_scale.o \
+	mpas_gsl_oro_data_lg_scale.o \
+	mpas_init_atm_gwd_gsl.o \
 	mpas_init_atm_surface.o \
 	mpas_init_atm_vinterp.o \
+	mpas_init_atm_thompson_aerosols.o \
 	read_geogrid.o \
 	mpas_atmphys_constants.o \
 	mpas_atmphys_date_time.o \
 	mpas_atmphys_functions.o \
 	mpas_atmphys_initialize_real.o \
-	mpas_atmphys_utilities.o
+	mpas_atmphys_utilities.o \
+	mpas_stack.o \
+	mpas_kd_tree.o \
+	mpas_parse_geoindex.o \
+	mpas_geotile_manager.o
 
 all: core_hyd
 
@@ -37,7 +45,7 @@ core_input_gen:
 gen_includes:
 	$(CPP) $(CPPFLAGS) $(CPPINCLUDES) Registry.xml > Registry_processed.xml
 	(if [ ! -d inc ]; then mkdir -p inc; fi) # To generate *.inc files
-	(cd inc; $(REG_PARSE) < ../Registry_processed.xml )
+	(cd inc; $(REG_PARSE) ../Registry_processed.xml $(CPPFLAGS) )
 
 post_build:
 	if [ ! -e $(ROOT_DIR)/default_inputs ]; then mkdir $(ROOT_DIR)/default_inputs; fi
@@ -52,7 +60,9 @@ mpas_init_atm_cases.o: \
 	mpas_init_atm_hinterp.o \
 	mpas_init_atm_static.o \
 	mpas_init_atm_gwd.o \
+	mpas_init_atm_gwd_gsl.o \
 	mpas_init_atm_surface.o \
+	mpas_init_atm_thompson_aerosols.o \
 	mpas_init_atm_vinterp.o \
 	mpas_atmphys_constants.o \
 	mpas_atmphys_functions.o \
@@ -60,11 +70,21 @@ mpas_init_atm_cases.o: \
 
 mpas_init_atm_hinterp.o: mpas_init_atm_queue.o mpas_init_atm_bitarray.o
 
+mpas_init_atm_thompson_aerosols.o: \
+	mpas_init_atm_read_met.o \
+	mpas_init_atm_hinterp.o \
+	mpas_init_atm_llxy.o \
+	mpas_init_atm_vinterp.o \
+	mpas_atmphys_date_time.o \
+	mpas_atmphys_utilities.o
+
 mpas_advection.o: 
 
 mpas_init_atm_read_met.o:
 
 read_geogrid.o:
+
+mpas_kd_tree.o:
 
 mpas_init_atm_llxy.o:
 
@@ -72,11 +92,21 @@ mpas_init_atm_core_interface.o: mpas_init_atm_core.o
 
 mpas_init_atm_core.o: mpas_advection.o mpas_init_atm_cases.o
 
+mpas_stack.o:
+
+mpas_parse_geoindex.o:
+
+mpas_geotile_manager.o: mpas_parse_geoindex.o
+
 mpas_init_atm_static.o: \
 	mpas_atm_advection.o \
 	mpas_init_atm_hinterp.o \
 	mpas_init_atm_llxy.o \
-	mpas_atmphys_utilities.o
+	mpas_atmphys_utilities.o \
+	mpas_stack.o \
+	mpas_kd_tree.o \
+	mpas_parse_geoindex.o \
+	mpas_geotile_manager.o
 
 mpas_init_atm_surface.o: \
 	mpas_init_atm_hinterp.o  \
@@ -87,6 +117,10 @@ mpas_atmphys_initialize_real.o:  \
 	mpas_init_atm_surface.o  \
 	mpas_atmphys_date_time.o \
 	mpas_atmphys_utilities.o
+
+mpas_init_atm_gwd_gsl.o: \
+	mpas_gsl_oro_data_sm_scale.o \
+	mpas_gsl_oro_data_lg_scale.o
 
 clean:
 	$(RM) *.o *.mod *.f90 libdycore.a
@@ -99,10 +133,10 @@ clean:
 .F.o:
 	$(RM) $@ $*.mod
 ifeq "$(GEN_F90)" "true"
-	$(CPP) $(CPPFLAGS) $(CPPINCLUDES) $< > $*.f90
+	$(CPP) $(CPPFLAGS) $(CPPINCLUDES) -I./inc $< > $*.f90
 	$(FC) $(FFLAGS) -c $*.f90 $(FCINCLUDES) -I../framework -I../operators  -I../external/esmf_time_f90
 else
-	$(FC) $(CPPFLAGS) $(FFLAGS) -c $*.F $(CPPINCLUDES) $(FCINCLUDES) -I../framework -I../operators  -I../external/esmf_time_f90
+	$(FC) $(CPPFLAGS) $(FFLAGS) -c $*.F $(CPPINCLUDES) $(FCINCLUDES) -I./inc -I../framework -I../operators  -I../external/esmf_time_f90
 endif
 
 .c.o:

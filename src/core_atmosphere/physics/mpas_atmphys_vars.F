@@ -8,6 +8,8 @@
 !=================================================================================================================
  module mpas_atmphys_vars
  use mpas_kind_types
+
+ use NoahmpIOVarType
  
  implicit none
  public
@@ -67,7 +69,10 @@
 !   Laura D. Fowler (laura@ucar.edu) / 2016-10-21.
 ! * moved the declarations of arrays delta_p,wstar_p,uoce_p,and voce_p since they are now used in both modules
 !   module_bl_ysu.F and module_bl_mynn.F.
-!   Laura D. Fowler (laura@ucar.edu) / 20016-10-27.
+!   Laura D. Fowler (laura@ucar.edu) / 2016-10-27.
+! * added the variable opt_thcnd (option to treat thermal conductivity in NoahLSM). added additional options and
+!   arrays to run the Noah LSM scheme from WRF version 3.9.0.
+!   Laura D. Fowler (laura@ucar.edu) / 2017-01-27.
 ! * removed the initialization local variable gwdo_scheme. gwdo_scheme is no longer needed and can be replaced
 !   with config_gwdo_scheme.
 !   Laura D. Fowler (laura@ucar.edu) / 2017-02-16.
@@ -95,6 +100,40 @@
 ! * removed the initialization local variable microp_scheme. microp_scheme is no longer needed and can be
 !   replaced replaced with config_microp_scheme.
 !   Laura D. Fowler (laura@ucar.edu) / 2017-02-16.
+! * add variables and arrays needed to the parameterization of seaice in the updated Noah land surface scheme.
+!   Laura D. Fowler (laura@ucar.edu) / 2017-02-19.
+! * changed the option seaice_albedo_opt from 0 to 2 so that we can initialize the surface albedo over seaice
+!   cells using the surface background albedo (see initialization of sfc_albedo_seaice in subroutine
+!   landuse_init_forMPAS).
+!   Laura D. Fowler (laura@ucar.edu) / 2017-03-02.
+! * added local variables for the mass-weighted mean velocities for rain, cloud ice, snow, and graupel from the
+!   Thompson cloud microphysics scheme.
+!   Laura D. Fowler (laura@ucar.edu) / 2017-04-19.
+! * added the local variables cosa_p and sina_p needed in call to subroutine gwdo after updating module_bl_gwdo.F
+!   to that of WRF version 4.0.2.
+!   Laura D. Fowler (laura@ucar.edu) / 2019-01-30.
+! * reverted the option seaice_albedo_opt = 2 to seaic_albedo_opt = 0 since MPAS does not currently support the
+!   input of "observed" 2D seaice albedos. In conjunction with this update, we also change the initialization of
+!   albsi from albbck to seaice_albedo_default.
+!   Laura D. Fowler (laura@ucar.edu) / 2022-05-10.
+! * added the local parameters flag_bep and idiff in the call to subroutine ysu to update the YSU PBL scheme to
+!   that of WRF version 4.4.1.
+! * added local flags and variables needed to initialize and run the revised version of the MONIN-OBUKHOV surface
+!   layer scheme from the WRF version 4.4.1.
+!   Laura D. Fowler (laura@ucar.edu) / 2023-05-15.
+! * added the local variables swddir,swddni,and swddif which are output to subroutine rrtmg_swrad and now input
+!   to the updated module_sf_noahdrv.F.
+!   Laura D. Fowler (laura@ucar.edu) / 2023-04-21.
+! * removed the variable f_qv which is not used in any of the ./physics_wrf modules.
+!   Laura D. Fowler (laura@ucar.edu) / 2024-02-13.
+! * removed the definition of f_qc,f_qr,f_qi,f_qs,f_qg,f_nc,and f_ni as parameters. these variables are now
+!   initialized in mpas_atmphys_init.F (see subroutine init_physics_flags). also renamed f_qnc to f_nc, and f_qni
+!   to f_ni.
+!   Laura D. Fowler (laura@ucar.edu) / 2024-02-14.
+! * added the variable spp_pbl needed in the updated version of the MYNN surface layer scheme.
+!   Laura D. Fowler (laura@ucar.edu) / 2024-02-14.
+! * added and modified variables needed to run the MYNN PBL scheme using the sourcecode from WRF version 4.6.
+!   Laura D. Fowler (laura@ucar.edu) / 2024-02-18.
 
 
 !=================================================================================================================
@@ -167,8 +206,9 @@
     qg_p               !graupel mixing ratio                                                [kg/kg]
 
  real(kind=RKIND),dimension(:,:,:),allocatable:: &
-    ni_p,             &!
-    nr_p               !
+    nc_p,             &!cloud water droplet number concentration                             [#/kg]
+    ni_p,             &!cloud ice crystal number concentration                               [#/kg]
+    nr_p               !rain drop number concentration                                       [#/kg]
 
 !... arrays located at w (vertical velocity) points, or at interface between layers:
  real(kind=RKIND),dimension(:,:,:),allocatable:: &
@@ -201,26 +241,25 @@
 !          that the ice phase is included (except for the Kessler scheme which includes water
 !          clouds only.
 
-!    f_qv,f_qc,f_qr,f_qi,f_qs,f_qg: These logicals were initially defined in WRF to determine
-!          which kind of hydrometeors are present. Here, we assume that all six water species
-!          are present, even if their mixing ratios and number concentrations are zero.
-
 !=================================================================================================================
 
  logical,parameter:: &
-    warm_rain=.false.  !warm-phase cloud microphysics only (used in WRF).
+    warm_rain = .false.!warm-phase cloud microphysics only (used in WRF).
 
- logical,parameter:: &
-    f_qv = .true.,    &!
-    f_qc = .true.,    &!
-    f_qr = .true.,    &!
-    f_qi = .true.,    &!
-    f_qs = .true.,    &!
-    f_qg = .true.      !
+ logical:: &
+    f_qc,             &!parameter set to true to include the cloud water mixing ratio.
+    f_qr,             &!parameter set to true to include the rain mixing ratio.
+    f_qi,             &!parameter set to true to include the cloud ice mixing ratio.
+    f_qs,             &!parameter set to true to include the snow mixing ratio.
+    f_qg,             &!parameter set to true to include the graupel mixing ratio.
+    f_qoz              !parameter set to true to include the ozone mixing ratio.
 
- logical,parameter:: &
-    f_qnc = .true.,   &!
-    f_qni = .true.     !
+ logical:: &
+    f_nc,             &!parameter set to true to include the cloud water number concentration.
+    f_ni,             &!parameter set to true to include the cloud ice number concentration.
+    f_nifa,           &!parameter set to true to include the number concentration of hygroscopic aerosols.
+    f_nwfa,           &!parameter set to true to include the number concentration of hydrophobic aerosols.
+    f_nbca             !parameter set to true to include the number concentration of black carbon.
 
  real(kind=RKIND),dimension(:,:,:),allocatable:: &
     f_ice,            &!fraction of cloud ice (used in WRF only).
@@ -235,22 +274,28 @@
     graupelncv_p,     &!
     sr_p
 
-!... added for the thompson and wsm6 cloud microphysics:
  integer:: & 
     has_reqc,         &!
     has_reqi,         &!
     has_reqs
 
- real(kind=RKIND),dimension(:,:),allocatable:: &
-    ntc_p,            &!
-    muc_p              !
  real(kind=RKIND),dimension(:,:,:),allocatable:: &
     rainprod_p,       &!
     evapprod_p,       &!
     recloud_p,        &!
     reice_p,          &!
-    resnow_p,         &!
-    refl10cm_p         !
+    resnow_p           !
+
+!... for Thompson cloud microphysics parameterization, including aerosol-aware option:
+ real(kind=RKIND),dimension(:,:),allocatable:: &
+    ntc_p,            &!
+    muc_p,            &!
+    nifa2d_p,         &!surface emission of "ice-friendly" aerosols                                     [#/kg-1/s]
+    nwfa2d_p           !surface emission of "water-friendly" aerosols                                   [#/kg-1/s]
+
+ real(kind=RKIND),dimension(:,:,:),allocatable:: &
+    nifa_p,           &!"ice-friendly" number concentration                                                 [#/kg]
+    nwfa_p             !"water-friendly" number concentration                                               [#/kg]
 
 !=================================================================================================================
 !... variables and arrays related to parameterization of convection:
@@ -328,6 +373,14 @@
 !... variables and arrays related to parameterization of pbl:
 !=================================================================================================================
 
+ logical,parameter:: &
+    flag_bep = .false. !flag to use BEP/BEP+BEM for use in the YSU PBL scheme (with urban physics). since we do
+                       !not run urban physics, flag_bep is always set to false.
+
+ integer,parameter:: &
+    idiff = 0          !BEP/BEM+BEM diffusion flag for use in the YSU PBL scheme (with urban physics). since we
+                       !do not run urban physics, idiff is set to zero.
+
  integer:: ysu_pblmix
 
  integer,dimension(:,:),allocatable:: &
@@ -348,12 +401,12 @@
     exch_p             !exchange coefficient                                                                   [-]
 
  real(kind=RKIND),dimension(:,:,:),allocatable:: &
-    rublten_p,        &!
-    rvblten_p,        &!
-    rthblten_p,       &!
-    rqvblten_p,       &!
-    rqcblten_p,       &!
-    rqiblten_p         !
+    rublten_p,        &!tendency of zonal wind due to PBL processes.
+    rvblten_p,        &!tendency of meridional wind due to PBL processes.
+    rthblten_p,       &!tendency of potential temperature due to PBL processes.
+    rqvblten_p,       &!tendency of water vapor mixing ratio due to PBL processes.
+    rqcblten_p,       &!tendency of cloud water mixing ratio due to PBL processes.
+    rqiblten_p         !tendency of cloud ice mixing ratio due to PBL processes.
 
  real(kind=RKIND),dimension(:,:,:),allocatable:: &
     kzh_p,            &!
@@ -361,14 +414,16 @@
     kzq_p              !
 
 !... MYNN PBL scheme (module_bl_mynn.F):
- integer,parameter:: grav_settling = 0
+ integer,parameter:: spp_pbl   = 0          !generate array with random perturbations (0=off,1=on).
+ integer,parameter:: icloud_bl = 0          !no coupling of subgrid-scale clouds with radiation.
 
- logical,parameter:: bl_mynn_tkeadvect = .false.!
- integer,parameter:: bl_mynn_tkebudget = 0      !
- integer,parameter:: bl_mynn_cloudpdf  = 0      !
+ integer,dimension(:,:),allocatable:: &
+    kbl_plume_p        !level of highest penetrating plume.
 
  real(kind=RKIND),dimension(:,:),allocatable:: &
-    vdfg_p             !
+    maxwidthbl_p,     &!max plume width                                                                        [m]
+    maxmfbl_p,        &!maximum mass flux for PBL shallow convection.
+    zbl_plume_p        !height of highest penetrating plume                                                    [m]
 
  real(kind=RKIND),dimension(:,:,:),allocatable:: &
     dqke_p,           &!
@@ -381,11 +436,37 @@
     tkepbl_p           !
 
  real(kind=RKIND),dimension(:,:,:),allocatable:: &
-    rniblten_p         !
+    edmfa_p,          &!
+    edmfw_p,          &!
+    edmfqt_p,         &!
+    edmfthl_p,        &!
+    edmfent_p,        &!
+    edmfqc_p,         &!
+    subthl_p,         &!
+    subqv_p,          &!
+    detthl_p,         &!
+    detqv_p,          &!
+    qcbl_p,           &!
+    qibl_p,           &!
+    cldfrabl_p         !
+
+ real(kind=RKIND),dimension(:,:,:),allocatable:: &
+    rqsblten_p,       &!tendency of snow mixing ratio due to PBL processes.
+    rncblten_p,       &!tendency of cloud liquid water number concentration due to PBL processes.
+    rniblten_p,       &!tendency of cloud ice number concentration due to PBL processes.
+    rnifablten_p,     &!tendency of ice-friendly aerosol number concentration due to PBL processes.
+    rnwfablten_p       !tendency of water-friendly aerosol number concentration due to PBL processes.
+
+ real(kind=RKIND),dimension(:,:,:),allocatable:: &
+    pattern_spp_pbl    !stochastic forcing for the MYMM PBL and surface layer schemes.
 
 !=================================================================================================================
 !... variables and arrays related to parameterization of gravity wave drag over orography:
 !=================================================================================================================
+
+ real(kind=RKIND),dimension(:,:),allocatable:: &
+    cosa_p,           &!cosine of map rotation                                                                 [-]
+    sina_p             !sine of map rotation                                                                   [-]
 
  real(kind=RKIND),dimension(:,:),allocatable:: &
     var2d_p,          &!orographic variance                                                                   [m2]
@@ -409,6 +490,65 @@
  real(kind=RKIND),dimension(:,:,:),allocatable:: &
     dtaux3d_p,        &!gravity wave drag over orography u-stress                                          [m s-1]
     dtauy3d_p          !gravity wave drag over orography u-stress                                          [m s-1]
+
+!... variables for UGWP orographic gravity wave drag:
+
+ real(kind=RKIND),dimension(:,:),allocatable:: &
+    var2dls_p,        &!orographic variance (meso-scale orographic variation)                                  [m]
+    conls_p,          &!orographic convexity (meso-scale orographic variation)                                 [-]
+    oa1ls_p,          &!orographic direction asymmetry function (meso-scale orographic variation)              [-]
+    oa2ls_p,          &!orographic direction asymmetry function (meso-scale orographic variation)              [-]
+    oa3ls_p,          &!orographic direction asymmetry function (meso-scale orographic variation)              [-]
+    oa4ls_p,          &!orographic direction asymmetry function (meso-scale orographic variation)              [-]
+    ol1ls_p,          &!orographic direction asymmetry function (meso-scale orographic variation)              [-]
+    ol2ls_p,          &!orographic direction asymmetry function (meso-scale orographic variation)              [-]
+    ol3ls_p,          &!orographic direction asymmetry function (meso-scale orographic variation)              [-]
+    ol4ls_p,          &!orographic direction asymmetry function (meso-scale orographic variation)              [-]
+    var2dss_p,        &!orographic variance (small-scale orographic variation)                                 [m]
+    conss_p,          &!orographic convexity (small-scale orographic variation)                                [-]
+    oa1ss_p,          &!orographic direction asymmetry function (small-scale orographic variation)             [-]
+    oa2ss_p,          &!orographic direction asymmetry function (small-scale orographic variation)             [-]
+    oa3ss_p,          &!orographic direction asymmetry function (small-scale orographic variation)             [-]
+    oa4ss_p,          &!orographic direction asymmetry function (small-scale orographic variation)             [-]
+    ol1ss_p,          &!orographic direction asymmetry function (small-scale orographic variation)             [-]
+    ol2ss_p,          &!orographic direction asymmetry function (small-scale orographic variation)             [-]
+    ol3ss_p,          &!orographic direction asymmetry function (small-scale orographic variation)             [-]
+    ol4ss_p            !orographic direction asymmetry function (small-scale orographic variation)             [-]
+
+ real(kind=RKIND),dimension(:,:),allocatable:: &
+    dusfc_ls_p,       &!vertically-integrated mesoscale orog gravity wave drag u-stress                       [Pa]
+    dvsfc_ls_p,       &!vertically-integrated mesoscale orog gravity wave drag v-stress                       [Pa]
+    dusfc_bl_p,       &!vertically-integrated orog blocking drag u-stress                                     [Pa]
+    dvsfc_bl_p,       &!vertically-integrated orog blocking drag v-stress                                     [Pa]
+    dusfc_ss_p,       &!vertically-integrated small-scale orog gravity wave drag u-stres                      [Pa]
+    dvsfc_ss_p,       &!vertically-integrated small-scale orog gravity wave drag v-stres                      [Pa]
+    dusfc_fd_p,       &!vertically-integrated turb orog form drag u-stress                                    [Pa]
+    dvsfc_fd_p         !vertically-integrated turb orog form drag v-stress                                    [Pa]
+
+ real(kind=RKIND),dimension(:,:,:),allocatable:: &
+    dtaux3d_ls_p,     &!mesoscale orog gravity wave drag u-tendency                                        [m s-2]
+    dtauy3d_ls_p,     &!mesoscale orog gravity wave drag v-tendency                                        [m s-2]
+    dtaux3d_bl_p,     &!orog blocking drag u-tendency u-tendency                                           [m s-2]
+    dtauy3d_bl_p,     &!orog blocking drag u-tendency v-tendency                                           [m s-2]
+    dtaux3d_ss_p,     &!small-scale orog gravity wave drag u-tendency                                      [m s-2]
+    dtauy3d_ss_p,     &!small-scale orog gravity wave drag v-tendency                                      [m s-2]
+    dtaux3d_fd_p,     &!turb orog form drag u-tendency                                                     [m s-2]
+    dtauy3d_fd_p       !turb orog form drag u-tendency                                                     [m s-2]
+
+!... variables for UGWP non-stationary gravity wave (NGW) drag:
+
+ integer,dimension(:,:),allocatable:: &
+    jindx1_tau_p,     &!lower latitude index of NGW momentum flux for interpolation                            [-]
+    jindx2_tau_p       !upper latitude index of NGW momentum flux for interpolation                            [-]
+
+ real(kind=RKIND),dimension(:,:),allocatable:: &
+    ddy_j1tau_p,      &!latitude interpolation weight complement for NGW momentum flux                         [-]
+    ddy_j2tau_p        !latitude interpolation weight for NGW momentum flux                                    [-]
+
+ real(kind=RKIND),dimension(:,:,:),allocatable:: &
+    dudt_ngw_p,       &!u-momentum tendency due to non-stationary gravity wave drag                        [m s-2]
+    dvdt_ngw_p,       &!v-momentum tendency due to non-stationary gravity wave drag                        [m s-2]
+    dtdt_ngw_p         !temperature tendency due to non-stationary gravity wave drag                       [K s-1]
 
 !=================================================================================================================
 !... variables and arrays related to parameterization of surface layer:
@@ -455,6 +595,26 @@
     fh_p,             &!integrated stability function for heat                                                 [-]
     fm_p               !integrated stability function for momentum                                             [-]
 
+!... variables and arrays only in the revised version of monin_obukhov (module_sf_sfclayrev.F) to include the
+!    shallow water roughness scheme:
+ integer,parameter:: &
+    bathymetry_flag = 0!this flag is set to 1 if input bathymetry data is available (this option is not available
+                       !in MPAS and therefore set to 0 by default.
+ integer,parameter:: &
+    shalwater_flag  = 0!this flag is set to 1 to run the shallow water roughness scheme (this option is not
+                       !available in MPAS and therefore set to 0 by default.
+ integer,parameter:: &
+    lakemodel_flag  = 0!this flag is set to 1 to run the lake model physics (this option is not available in MPAS
+                       !and therefore set to 0 by default.
+
+ real(kind=RKIND),parameter:: &
+    shalwater_depth = 0!constant shallow water depth needed to run the shallow water roughness scheme.
+
+ real(kind=RKIND),dimension(:,:),allocatable:: &
+    waterdepth_p,     &!depth of water needed to run the shallow water roughness scheme.
+    lakedepth_p,      &!depth of lakes needed to run the lake model physics.
+    lakemask_p         !mask needed to detect the location of lakes to run the lake model physics.
+
 !... arrays only in mynn surface layer scheme (module_sf_mynn.F):
  real(kind=RKIND),dimension(:,:),allocatable:: &
     ch_p,             &!surface exchange coeff for heat                                                      [m/s]
@@ -465,7 +625,67 @@
     qsq_p,            &!liquid water variance                                                          [(kg/kg)^2]
     tsq_p,            &!liquid water potential temperature variance                                          [K^2]
     sh3d_p,           &!stability function for heat                                                            [-]
+    sm3d_p,           &!stability function for moisture                                                        [-]
     elpbl_p            !length scale from PBL                                                                  [m]
+
+!=================================================================================================================
+!... variables and arrays related to parameterization of seaice:
+!... the options set for seaice_albedo_opt, seaice_thickness_opt, and seaicesnowdepth_opt must not be changed
+!    since they are the only ones currently available.
+!=================================================================================================================
+
+ integer,parameter:: &
+    seaice_albedo_opt    = 0           !option to set albedo over sea ice.
+                                       !0 = seaice albedo is constant set in seaice_albedo_default.
+                                       !1 = seaice albedo is f(Tair,Tskin,Tsnow), following Mill (2011).
+                                       !2 = seaice albedo is read in from input variable albsi.
+ integer,parameter:: &
+    seaice_thickness_opt = 0           !option for treating seaice thickness.
+                                       !0 = seaice thickness is constant set in seaice_thickness_default.
+                                       !1 = seaice_thickness is read in from input variable icedepth.
+ integer,parameter:: &
+    seaice_snowdepth_opt = 0           !option for treating snow depth on sea ice.
+                                       !0=snow depth is bounded by seaice_snowdepth_min and seaice_snowdepth_max.
+
+ real(kind=RKIND),parameter:: &
+    seaice_albedo_default     = 0.65 ,&!default value of seaice albedo for seaice_albedo_opt=0.
+    seaice_thickness_default  = 3.0,  &!default value of seaice thickness for seaice_thickness_opt=0
+    seaice_snowdepth_max      = 1.e10,&!maximum allowed accumulation of snow (m) on sea ice.
+    seaice_snowdepth_min      = 0.001  !minimum snow depth (m) on sea ice.
+
+ real(kind=RKIND),dimension(:,:),allocatable:: &
+    albsi_p,          &!surface albedo over seaice                                                             [-]
+    snowsi_p,         &!snow depth over seaice                                                                 [m]
+    icedepth_p         !seaice thickness                                                                       [m]
+
+!=================================================================================================================
+!... variables and arrays related to the calculation of the optical properties of aerosols: to date, the only kind
+!    of aerosols included in MPAS are the "water-friendly" and "ice-friendly" aerosols used in the Thompson cloud
+!    cloud microphysics scheme.
+!=================================================================================================================
+
+ integer,parameter:: taer_aod550_opt = 2!input option for nwfa, nifa optical depth at 500 nm.
+ integer,parameter:: taer_angexp_opt = 3!input option for nwfa, nifa aerosol Angstrom exponent.
+ integer,parameter:: taer_ssa_opt    = 3!input option for nwfa, nifa aerosol single-scattering albedo.
+ integer,parameter:: taer_asy_opt    = 3!input option for nwfa, nifa aerosol asymmetry factor.
+
+ integer:: aer_opt                      !=[0,3]  : 0 for no aerosols, 3 for "water-" and "ice-friendly" aerosols.
+ integer,dimension(:,:),allocatable:: &
+                     taer_type_p        !=[1,2,3]: 1 for rural, 2 is urban and 3 is maritime in WRF. In MPAS,
+                                        !aer_type is initialized as a function of landmask (=1 over land; =2 over
+                                        !oceans.
+
+ real(kind=RKIND),parameter:: aer_aod550_val = 0.12
+ real(kind=RKIND),parameter:: aer_angexp_val = 1.3
+ real(kind=RKIND),parameter:: aer_ssa_val    = 0.85
+ real(kind=RKIND),parameter:: aer_asy_val    = 0.9
+
+ real(kind=RKIND),dimension(:,:),allocatable  ::   taod5502d_p!total aerosol optical depth at 550 nm           [-]
+ real(kind=RKIND),dimension(:,:,:),allocatable::   taod5503d_p!aerosol optical depth at 550 nm                 [-]
+
+ real(kind=RKIND),dimension(:,:,:,:),allocatable:: tauaer_p   !aerosol optical depth in RRTMG SW               [-]
+ real(kind=RKIND),dimension(:,:,:,:),allocatable:: ssaaer_p   !aerosol single scatterin albedo in RRTMG SW     [-]
+ real(kind=RKIND),dimension(:,:,:,:),allocatable:: asyaer_p   !aerosol asymmetry factor in RRTMG SW            [-]
 
 !=================================================================================================================
 !... variables and arrays related to parameterization of short-wave radiation:
@@ -493,6 +713,11 @@
     swvisdif_p,       &!visible diffuse downward flux                                       [W m-2]
     swnirdir_p,       &!near-IR direct downward flux                                        [W m-2]
     swnirdif_p         !near-IR diffuse downward flux                                       [W m-2]
+
+ real(kind=RKIND),dimension(:,:),allocatable:: &
+    swddir_p,         &!
+    swddni_p,         &!
+    swddif_p           !
 
  real(kind=RKIND),dimension(:,:,:),allocatable:: &
     swdnflx_p,        &!
@@ -593,8 +818,19 @@
 !=================================================================================================================
 
  logical,parameter:: &
-    ua_phys=.false.    !option to activate UA Noah changes: a different snow-cover physics in the land-surface
+    ua_phys = .false.  !option to activate UA Noah changes: a different snow-cover physics in the land-surface
                        !scheme. That option is not currently implemented in MPAS.
+
+ integer,parameter:: &
+    opt_thcnd = 1      !option to treat thermal conductivity in NoahLSM (new option implemented in WRF 3.8.0).
+                       != 1, original (default).
+                       != 2, McCumber and Pielke for silt loam and sandy loam.
+
+ integer,parameter:: &
+    fasdas = 0         !for WRF surface data assimilation system (not used in MPAS).
+
+ integer,parameter:: &
+    nurb = 1           !generic dimension for all dimensions needed to run the urban physics.
 
  integer,public:: &
     sf_surface_physics !used to define the land surface scheme by a number instead of name. It
@@ -647,6 +883,28 @@
     alswvisdif_p,     &!diffuse-beam surface albedo in visible spectrum                                        [-]
     alswnirdir_p,     &!direct-beam surface albedo in near-IR spectrum                                         [-]
     alswnirdif_p       !diffuse-beam surface albedo in near-IR spectrum                                        [-]
+
+!.. arrays needed to run UA Noah changes (different snow-cover physics):
+ real(kind=RKIND),dimension(:,:),allocatable:: &
+    flxsnow_p,        &!energy added to sensible heat flux when ua_phys=true                               [W m-2]
+    fvbsnow_p,        &!fraction of vegetation with snow beneath when ua_phys=true                             [-]
+    fbursnow_p,       &!fraction of canopy buried when ua_phys=true                                            [-]
+    fgsnsnow_p         !fraction of ground snow cover when ua_phys=true                                        [-]
+
+!.. arrays needed in the argument list in the call to the Noah LSM urban parameterization: note that these arrays
+!.. are initialized to zero since we do not run an urban model:
+ integer,dimension(:,:),allocatable:: &
+    utype_urb_p        !urban type                                                                             [-]
+
+ real(kind=RKIND),dimension(:,:),allocatable:: &
+    frc_urb_p,        &!urban fraction                                                                         [-]
+    ust_urb_p          !urban u* in similarity theory                                                        [m/s]
+
+!=================================================================================================================
+!.. variables and arrays related to the Noahmp land-surface parameterization:
+!=================================================================================================================
+
+ type(NoahmpIO_type):: mpas_noahmp
 
 !=================================================================================================================
 !.. variables and arrays related to surface characteristics:

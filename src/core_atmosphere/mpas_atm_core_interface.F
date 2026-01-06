@@ -55,7 +55,7 @@ module atm_core_interface
       core % Conventions = 'MPAS'
       core % source = 'MPAS'
 
-#include "inc/core_variables.inc"
+#include "core_variables.inc"
 
    end subroutine atm_setup_core
 
@@ -80,7 +80,7 @@ module atm_core_interface
 
       type (domain_type), pointer :: domain
 
-#include "inc/domain_variables.inc"
+#include "domain_variables.inc"
 
    end subroutine atm_setup_domain
 
@@ -99,10 +99,10 @@ module atm_core_interface
    !>  not allocated until after this routine has been called.
    !
    !-----------------------------------------------------------------------
-   function atm_setup_packages(configs, packages, iocontext) result(ierr)
+   function atm_setup_packages(configs, streamInfo, packages, iocontext) result(ierr)
 
       use mpas_dmpar
-      use mpas_derived_types, only : mpas_pool_type, mpas_io_context_type
+      use mpas_derived_types, only : mpas_pool_type, mpas_io_context_type, MPAS_streamInfo_type
       use mpas_pool_routines, only : mpas_pool_get_config, mpas_pool_get_package
 
 #ifdef DO_PHYSICS
@@ -113,15 +113,35 @@ module atm_core_interface
       implicit none
 
       type (mpas_pool_type), intent(inout) :: configs
+      type (MPAS_streamInfo_type), intent(inout) :: streamInfo
       type (mpas_pool_type), intent(inout) :: packages
       type (mpas_io_context_type), intent(inout) :: iocontext
       integer :: ierr
 
       logical, pointer :: iauActive
       character(len=StrKIND), pointer :: config_iau_option
+      logical, pointer :: limited_areaActive
+      logical, pointer :: config_apply_lbcs
+      logical, pointer :: config_jedi_da, jedi_daActive
+      logical, pointer :: no_invariant_streamActive
+      logical, pointer :: ugwp_orog_streamActive
+      logical, pointer :: ugwp_ngw_streamActive
+      logical, pointer :: ugwp_diags_streamActive
+      character(len=StrKIND), pointer :: config_gwdo_scheme
+      logical, pointer :: config_ngw_scheme
+      logical, pointer :: config_ugwp_diags
+      character(len=StrKIND) :: attvalue
+      integer :: local_ierr
 
-      ierr = 0
 
+      ierr = atm_setup_packages_when(configs, packages)
+      if (ierr /= 0) then
+         return
+      end if
+
+      !
+      ! Incremental analysis update
+      !
       nullify(config_iau_option)
       call mpas_pool_get_config(configs, 'config_IAU_option', config_iau_option)
 
@@ -134,15 +154,109 @@ module atm_core_interface
          iauActive = .false.
       end if
 
+      !
+      ! Limited-area
+      !
+      nullify(config_apply_lbcs)
+      call mpas_pool_get_config(configs, 'config_apply_lbcs', config_apply_lbcs)
+
+      nullify(limited_areaActive)
+      call mpas_pool_get_package(packages, 'limited_areaActive', limited_areaActive)
+
+      if (config_apply_lbcs) then
+         limited_areaActive = .true.
+      else
+         limited_areaActive = .false.
+      end if
+
+      !
+      ! JEDI data assimilation
+      !
+      nullify(config_jedi_da)
+      call mpas_pool_get_config(configs, 'config_jedi_da', config_jedi_da)
+
+      nullify(jedi_daActive)
+      call mpas_pool_get_package(packages, 'jedi_daActive', jedi_daActive)
+
+      if (associated(config_jedi_da) .and. associated(jedi_daActive)) then
+         jedi_daActive = config_jedi_da
+      else
+         ierr = ierr + 1
+         call mpas_log_write('Package setup failed for ''jedi_da''. '// &
+              'Either ''jedi_da'' is not a package, or ''config_jedi_da'' is not a namelist option.', &
+              messageType=MPAS_LOG_ERR)
+      end if
+
+      !
+      ! Separate time-invariant stream
+      !
+      nullify(no_invariant_streamActive)
+      call mpas_pool_get_package(packages, 'no_invariant_streamActive', no_invariant_streamActive)
+
+      if (associated(no_invariant_streamActive)) then
+         no_invariant_streamActive = .true.
+         if (streamInfo % query('invariant', attname='input_interval', attvalue=attvalue)) then
+            if (trim(attvalue) == 'initial_only') then
+               no_invariant_streamActive = .false.
+            end if
+         end if
+      else
+         ierr = ierr + 1
+         call mpas_log_write("Package setup failed for 'no_invariant_stream'. 'no_invariant_stream' is not a package.", &
+                             messageType=MPAS_LOG_ERR)
+      end if
+
 #ifdef DO_PHYSICS
       !check that all the physics options are correctly defined and that at
       !least one physics parameterization is called (using the logical moist_physics):
       call physics_namelist_check(configs)
 
-      ierr = atmphys_setup_packages(configs,packages,iocontext)
-      if(ierr /= 0) then
+      local_ierr = atmphys_setup_packages(configs, packages, iocontext)
+      if (local_ierr /= 0) then
+         ierr = ierr + 1
          call mpas_log_write('Package setup failed for atmphys in core_atmosphere', messageType=MPAS_LOG_ERR)
-      endif
+      end if
+
+      !
+      ! Optional gravity wave drag parameterization streams
+      !
+      call mpas_pool_get_config(configs, 'config_gwdo_scheme', config_gwdo_scheme)
+      nullify(ugwp_orog_streamActive)
+      call mpas_pool_get_package(packages, 'ugwp_orog_streamActive', ugwp_orog_streamActive)
+      if ( associated(config_gwdo_scheme) .and. associated(ugwp_orog_streamActive) ) then
+         if (trim(config_gwdo_scheme) == "bl_ugwp_gwdo") then
+            ugwp_orog_streamActive = .true.
+         else
+            ugwp_orog_streamActive = .false.
+         endif
+      else
+         ierr = ierr + 1
+         call mpas_log_write("Package setup failed for 'ugwp_orog_stream'. 'ugwp_orog_stream' is not a package.", &
+                             messageType=MPAS_LOG_ERR)
+      end if
+
+      call mpas_pool_get_config(configs, 'config_ngw_scheme', config_ngw_scheme)
+      nullify(ugwp_ngw_streamActive)
+      call mpas_pool_get_package(packages, 'ugwp_ngw_streamActive', ugwp_ngw_streamActive)
+      if ( associated(config_ngw_scheme) .and. associated(ugwp_ngw_streamActive) ) then
+            ugwp_ngw_streamActive = config_ngw_scheme
+      else
+         ierr = ierr + 1
+         call mpas_log_write("Package setup failed for 'ugwp_ngw_stream'. 'ugwp_ngw_stream' is not a package.", &
+                             messageType=MPAS_LOG_ERR)
+      end if
+
+      call mpas_pool_get_config(configs, 'config_ugwp_diags', config_ugwp_diags)
+      nullify(ugwp_diags_streamActive)
+      call mpas_pool_get_package(packages, 'ugwp_diags_streamActive', ugwp_diags_streamActive)
+      if ( associated(config_ugwp_diags) .and. associated(ugwp_diags_streamActive) ) then
+            ugwp_diags_streamActive = config_ugwp_diags
+      else
+         ierr = ierr + 1
+         call mpas_log_write("Package setup failed for 'ugwp_diags_stream'. 'ugwp_diags_stream' is not a package.", &
+                             messageType=MPAS_LOG_ERR)
+      end if
+
 #endif
 
    end function atm_setup_packages
@@ -195,15 +309,17 @@ module atm_core_interface
    !>  and allow the core to specify details of the configuration.
    !
    !-----------------------------------------------------------------------
-   function atm_setup_log(logInfo, domain) result(iErr)!{{{
+   function atm_setup_log(logInfo, domain, unitNumbers) result(iErr)!{{{
 
       use mpas_derived_types, only : mpas_log_type, domain_type
       use mpas_log, only : mpas_log_init, mpas_log_open
+      use mpas_framework, only : mpas_framework_report_settings
 
       implicit none
 
-      type (mpas_log_type), intent(inout), pointer :: logInfo  !< logging information object to set up
-      type (domain_type), intent(in), pointer :: domain  !< domain object to provide info for setting up log manager
+      type (mpas_log_type), intent(inout), pointer :: logInfo    !< logging information object to set up
+      type (domain_type), intent(in), pointer :: domain          !< domain object to provide info for setting up log manager
+      integer, dimension(2), intent(in), optional :: unitNumbers !< Fortran unit numbers to use for output and error logs
       integer :: iErr
 
       ! Local variables
@@ -212,7 +328,7 @@ module atm_core_interface
       iErr = 0
 
       ! Initialize log manager
-      call mpas_log_init(logInfo, domain, err=local_err)
+      call mpas_log_init(logInfo, domain, unitNumbers=unitNumbers, err=local_err)
       iErr = ior(iErr, local_err)
 
       ! Set core specific options here
@@ -224,12 +340,10 @@ module atm_core_interface
       iErr = ior(iErr, local_err)
 
       call mpas_log_write('')
-#ifdef SINGLE_PRECISION
-      call mpas_log_write('Using default single-precision reals')
-#else
-      call mpas_log_write('Using default double-precision reals')
-#endif
+      call mpas_log_write('MPAS-Atmosphere Version '//trim(domain % core % modelVersion))
       call mpas_log_write('')
+
+      call mpas_framework_report_settings(domain)
 
    end function atm_setup_log!}}}
 
@@ -248,21 +362,35 @@ module atm_core_interface
    !>  are available.
    !
    !-----------------------------------------------------------------------
-   function atm_get_mesh_stream(configs, stream) result(ierr)
+   function atm_get_mesh_stream(configs, streamInfo, stream) result(ierr)
 
       use mpas_kind_types, only : StrKIND
-      use mpas_derived_types, only : mpas_pool_type
+      use mpas_derived_types, only : mpas_pool_type, MPAS_streamInfo_type
       use mpas_pool_routines, only : mpas_pool_get_config
 
       implicit none
 
       type (mpas_pool_type), intent(inout) :: configs
+      type (MPAS_streamInfo_type), intent(inout) :: streamInfo
       character(len=StrKIND), intent(out) :: stream
       integer :: ierr
 
       logical, pointer :: config_do_restart
+      character(len=StrKIND) :: attvalue
 
       ierr = 0
+
+      !
+      ! If the 'invariant' stream is defined in the streams XML file with an
+      ! input_interval of 'initial_only', then use the 'invariant' stream to
+      ! get mesh information
+      !
+      if (streamInfo % query('invariant', attname='input_interval', attvalue=attvalue)) then
+         if (trim(attvalue) == 'initial_only') then
+            write(stream,'(a)') 'invariant'
+            return
+         end if
+      end if
 
       call mpas_pool_get_config(configs, 'config_do_restart', config_do_restart)
 
@@ -333,29 +461,188 @@ module atm_core_interface
    function atm_setup_block(block) result(ierr)
 
       use mpas_derived_types, only : block_type
+      use mpas_pool_routines, only : mpas_pool_get_config
+      use mpas_log, only : mpas_log_write
 
       implicit none
 
       type (block_type), pointer :: block
       integer :: ierr
 
+      integer, pointer :: cam_pcnst
+      integer :: err_level
+
       ierr = 0
 
       call atm_generate_structs(block, block % structs, block % dimensions, block % packages)
 
+      !
+      ! When MPAS-A is operating as a dycore in CAM, the scalars/scalars_tend var_arrays are
+      ! allocated by the call to atm_allocate_scalars, below. The CAM-MPAS interface layer
+      ! should have added a config, cam_pcnst, to the configs pool to indicate how many scalars
+      ! are to be allocated.
+      !
+      nullify(cam_pcnst)
+      err_level = mpas_pool_get_error_level()
+      call mpas_pool_set_error_level(MPAS_POOL_SILENT)
+      call mpas_pool_get_config(block % domain % configs, 'cam_pcnst', cam_pcnst)
+      call mpas_pool_set_error_level(err_level)
+      if (associated(cam_pcnst)) then
+         call mpas_log_write('')
+         call mpas_log_write('** Config ''cam_pcnst'' is defined with a value of $i', intArgs=[cam_pcnst])
+         call mpas_log_write('   Scalars will be allocated separately from Registry-defined variables')
+         call mpas_log_write('')
+         ierr = atm_allocate_scalars(block, cam_pcnst)
+      end if
+
    end function atm_setup_block
 
 
-#include "inc/setup_immutable_streams.inc"
+   !***********************************************************************
+   !
+   !  function atm_allocate_scalars
+   !
+   !> \brief   Allocate scalars and scalars_tend var_arrays
+   !> \author  Michael G. Duda
+   !> \date    20 May 2020
+   !> \details 
+   !>  When MPAS-A is operating as a dycore for CAM, the scalars and
+   !>  scalars_tend var_arrays are allocated separately from other Registry-
+   !>  defined variables, since the set of scalars to be handled by the dycore
+   !>  is not known until runtime. This routine allocates these var_arrays,
+   !>  but it does not define which constituent is at which position in
+   !>  var_arrays; this is defined later in the CAM-MPAS interface layer.
+   !
+   !-----------------------------------------------------------------------
+   function atm_allocate_scalars(block, num_scalars) result(ierr)
 
-#include "inc/block_dimension_routines.inc"
+      use mpas_derived_types, only : block_type
 
-#include "inc/define_packages.inc"
+      use mpas_derived_types, only : mpas_pool_type, field3dReal, MPAS_LOG_ERR
+      use mpas_pool_routines, only : mpas_pool_get_subpool, mpas_pool_add_dimension, mpas_pool_add_field
+      use mpas_log, only : mpas_log_write
 
-#include "inc/structs_and_variables.inc"
+      implicit none
 
-#include "inc/namelist_call.inc"
+      ! Arguments
+      type (block_type), pointer :: block
+      integer, intent(in) :: num_scalars
 
-#include "inc/namelist_defines.inc"
+      ! Return value
+      integer :: ierr
+
+      ! Local variables
+      integer :: i, j, timeLevs
+      type (mpas_pool_type), pointer :: statePool
+      type (mpas_pool_type), pointer :: tendPool
+      type (field3dReal), dimension(:), pointer :: scalarsField
+
+
+      ierr = 0
+
+      !
+      ! Allocate scalars var_array
+      !
+      nullify(statePool)
+      call mpas_pool_get_subpool(block % structs, 'state', statePool)
+
+      if (.not. associated(statePool)) then
+         call mpas_log_write('No pool named ''state'' was found in atm_allocate_scalars', messageType=MPAS_LOG_ERR)
+         ierr = 1
+         return
+      end if
+
+      timeLevs = 2
+
+      call mpas_pool_add_dimension(statePool, 'num_scalars', num_scalars)
+
+      allocate(scalarsField(timeLevs))
+
+      do i = 1, timeLevs
+         scalarsField(i) % block => block
+         scalarsField(i) % fieldName = 'scalars'
+         scalarsField(i) % dimNames(1) = 'num_scalars'
+         scalarsField(i) % dimNames(2) = 'nVertLevels'
+         scalarsField(i) % dimNames(3) = 'nCells'
+         scalarsField(i) % defaultValue = 0.0
+         scalarsField(i) % missingValue = -1.0
+         scalarsField(i) % isDecomposed = .true.
+         scalarsField(i) % hasTimeDimension = .true.
+         scalarsField(i) % isActive = .true.
+         scalarsField(i) % isVarArray = .true.
+         scalarsField(i) % isPersistent = .true.
+
+         allocate(scalarsField(i) % constituentNames(num_scalars))
+
+         allocate(scalarsField(i) % attLists(num_scalars))
+         do j = 1, num_scalars
+            allocate(scalarsField(i) % attLists(j) % attList)
+         end do
+
+      end do
+
+      call mpas_pool_add_field(statePool, 'scalars', scalarsField)
+      call mpas_pool_add_field(block % allFields, 'scalars', scalarsField)
+
+
+      !
+      ! Allocate scalars_tend var_array
+      !
+      nullify(tendPool)
+      call mpas_pool_get_subpool(block % structs, 'tend', tendPool)
+
+      if (.not. associated(tendPool)) then
+         call mpas_log_write('No pool named ''tend'' was found in atm_allocate_scalars', messageType=MPAS_LOG_ERR)
+         ierr = 1
+         return
+      end if
+
+      timeLevs = 1
+
+      call mpas_pool_add_dimension(tendPool, 'num_scalars_tend', num_scalars)
+
+      allocate(scalarsField(timeLevs))
+
+      do i = 1, timeLevs
+         scalarsField(i) % block => block
+         scalarsField(i) % fieldName = 'scalars_tend'
+         scalarsField(i) % dimNames(1) = 'num_scalars_tend'
+         scalarsField(i) % dimNames(2) = 'nVertLevels'
+         scalarsField(i) % dimNames(3) = 'nCells'
+         scalarsField(i) % defaultValue = 0.0
+         scalarsField(i) % missingValue = -1.0
+         scalarsField(i) % isDecomposed = .true.
+         scalarsField(i) % hasTimeDimension = .true.
+         scalarsField(i) % isActive = .true.
+         scalarsField(i) % isVarArray = .true.
+         scalarsField(i) % isPersistent = .true.
+
+         allocate(scalarsField(i) % constituentNames(num_scalars))
+
+         allocate(scalarsField(i) % attLists(num_scalars))
+         do j = 1, num_scalars
+            allocate(scalarsField(i) % attLists(j) % attList)
+         end do
+
+      end do
+
+      call mpas_pool_add_field(tendPool, 'scalars_tend', scalarsField)
+      call mpas_pool_add_field(block % allFields, 'scalars_tend', scalarsField)
+
+   end function atm_allocate_scalars
+
+#include "setup_immutable_streams.inc"
+
+#include "block_dimension_routines.inc"
+
+#include "define_packages.inc"
+
+#include "setup_packages.inc"
+
+#include "structs_and_variables.inc"
+
+#include "namelist_call.inc"
+
+#include "namelist_defines.inc"
 
 end module atm_core_interface

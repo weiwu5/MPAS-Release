@@ -9,9 +9,11 @@
 
 module init_atm_read_met
 
+   use iso_fortran_env, only: real32
+
    integer, parameter :: MAX_FILENAME_LEN = 1024
 
-   real (kind=4), parameter :: EARTH_RADIUS_M = 6370000.   ! same as MM5 system
+   real (kind=real32), parameter :: EARTH_RADIUS_M = 6370000.   ! same as MM5 system
 
    ! Projection codes for proj_info structure:
    INTEGER, PRIVATE, PARAMETER  :: PROJ_LATLON = 0
@@ -24,10 +26,10 @@ module init_atm_read_met
    ! Derived types
    type met_data
       integer                       :: version, nx, ny, iproj
-      real (kind=4)                 :: xfcst, xlvl, startlat, startlon, starti, startj, &
+      real (kind=real32)                 :: xfcst, xlvl, startlat, startlon, starti, startj, &
                                        deltalat, deltalon, dx, dy, xlonc, &
                                        truelat1, truelat2, earth_radius
-      real (kind=4), pointer, dimension(:,:) :: slab
+      real (kind=real32), pointer, dimension(:,:) :: slab
       logical                       :: is_wind_grid_rel
       character (len=9)             :: field
       character (len=24)            :: hdate
@@ -51,6 +53,7 @@ module init_atm_read_met
 
       use mpas_derived_types, only : MPAS_LOG_ERR
       use mpas_log, only : mpas_log_write
+      use mpas_io_units, only : mpas_new_unit
  
       implicit none
   
@@ -75,11 +78,8 @@ module init_atm_read_met
       end if
   
       !  2) OPEN FILE
-      do input_unit=10,100
-         inquire(unit=input_unit, opened=is_used)
-         if (.not. is_used) exit
-      end do 
-      if (input_unit > 100) call mpas_log_write('In read_met_init(), couldn''t find an available Fortran unit.', messageType=MPAS_LOG_ERR)
+      call mpas_new_unit(input_unit, unformatted = .true.)
+      if (input_unit < 0) call mpas_log_write('In read_met_init(), couldn''t find an available Fortran unit.', messageType=MPAS_LOG_ERR)
       open(unit=input_unit, file=trim(filename), status='old', form='unformatted', iostat=io_status)
 
       if (io_status > 0) istatus = 1
@@ -418,9 +418,12 @@ module init_atm_read_met
    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
    subroutine read_met_close()
  
+      use mpas_io_units, only : mpas_release_unit
+
       implicit none
   
       close(unit=input_unit)
+      call mpas_release_unit(input_unit)
       filename = 'UNINITIALIZED_FILENAME'
   
    end subroutine read_met_close

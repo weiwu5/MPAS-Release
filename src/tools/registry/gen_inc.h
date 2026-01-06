@@ -9,10 +9,11 @@
 
 #include "ezxml.h"
 
-void write_model_variables(ezxml_t registry);
-int write_field_pointers(FILE* fd);
+void add_attribute_if_not_ignored(FILE *fd, char *index, char *att_name, char *pointer_name_arr, char *temp_str);
+int find_string_in_array(char *input_string, const char *array[], size_t rows);
+void write_model_variables(ezxml_t registry, int macro_count, const char **macros);
 int write_field_pointer_arrays(FILE* fd);
-int set_pointer_name(int type, int ndims, char *pointer_name);
+int set_pointer_name(int type, int ndims, char *pointer_name, int time_levs);
 int add_package_to_list(const char * package, const char * package_list);
 int build_struct_package_lists(ezxml_t currentPosition, char * out_packages);
 int get_dimension_information(ezxml_t registry, const char *test_dimname, int *has_time, int *decomp);
@@ -27,14 +28,15 @@ int parse_var_array(FILE *fd, ezxml_t registry, ezxml_t superStruct, ezxml_t var
 int parse_var(FILE *fd, ezxml_t registry, ezxml_t superStruct, ezxml_t currentVar, const char * corename);
 int parse_struct(FILE *fd, ezxml_t registry, ezxml_t superStruct, int subpool, const char *parentname, const char * corename);
 int determine_struct_depth(int curLevel, ezxml_t superStruct);
-int generate_struct_links(FILE *fd, int curLevel, ezxml_t superStruct, ezxml_t registry);
 int generate_field_exchanges(FILE *fd, int curLevel, ezxml_t superStruct);
 int generate_field_halo_exchanges_and_copies(ezxml_t registry);
 int generate_field_inputs(FILE *fd, int curLevel, ezxml_t superStruct);
 int generate_field_outputs(FILE *fd, int curLevel, ezxml_t superStruct);
 int generate_field_reads_and_writes(ezxml_t registry);
+int generate_immutable_streams(ezxml_t registry);
 int push_attributes(ezxml_t currentPosition);
 int merge_structs_and_var_arrays(ezxml_t currentPosition);
 int merge_streams(ezxml_t registry);
 int parse_structs_from_registry(ezxml_t registry);
-
+void mangle_name(char *new_name, const size_t new_name_size, const char *old_name);
+int generate_package_logic(ezxml_t registry);

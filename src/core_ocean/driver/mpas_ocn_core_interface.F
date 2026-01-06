@@ -95,11 +95,12 @@ module ocn_core_interface
    !>   *not* allocated until after this routine is called.
    !
    !-----------------------------------------------------------------------
-   function ocn_setup_packages(configPool, packagePool, iocontext) result(ierr)!{{{
+   function ocn_setup_packages(configPool, streamInfo, packagePool, iocontext) result(ierr)!{{{
 
       use ocn_analysis_driver
 
       type (mpas_pool_type), intent(inout) :: configPool
+      type (MPAS_streamInfo_type), intent(inout) :: streamInfo
       type (mpas_pool_type), intent(inout) :: packagePool
       type (mpas_io_context_type), intent(inout) :: iocontext
 
@@ -483,15 +484,16 @@ module ocn_core_interface
    !>  and allow the core to specify details of the configuration.
    !
    !-----------------------------------------------------------------------
-   function ocn_setup_log(logInfo, domain) result(iErr)!{{{
+   function ocn_setup_log(logInfo, domain, unitNumbers) result(iErr)!{{{
 
       use mpas_derived_types
       use mpas_log
 
       implicit none
 
-      type (mpas_log_type), intent(inout), pointer :: logInfo  !< logging information object to set up
-      type (domain_type), intent(in), pointer :: domain  !< domain object to provide info for setting up log manager
+      type (mpas_log_type), intent(inout), pointer :: logInfo    !< logging information object to set up
+      type (domain_type), intent(in), pointer :: domain          !< domain object to provide info for setting up log manager
+      integer, dimension(2), intent(in), optional :: unitNumbers !< Fortran unit numbers to use for output and error logs
       integer :: iErr
 
       ! Local variables
@@ -500,7 +502,7 @@ module ocn_core_interface
       iErr = 0
 
       ! Initialize log manager
-      call mpas_log_init(logInfo, domain, err=local_err)
+      call mpas_log_init(logInfo, domain, unitNumbers=unitNumbers, err=local_err)
       iErr = ior(iErr, local_err)
 
       ! Set core specific options here
@@ -528,7 +530,7 @@ module ocn_core_interface
    !>  are available.
    !
    !-----------------------------------------------------------------------
-   function ocn_get_mesh_stream(configs, stream) result(ierr)!{{{
+   function ocn_get_mesh_stream(configs, streamInfo, stream) result(ierr)!{{{
 
       use mpas_derived_types
       use mpas_pool_routines
@@ -536,6 +538,7 @@ module ocn_core_interface
       implicit none
 
       type (mpas_pool_type), intent(inout) :: configs
+      type (MPAS_streamInfo_type), intent(inout) :: streamInfo
       character(len=StrKIND), intent(out) :: stream
       integer :: ierr
 

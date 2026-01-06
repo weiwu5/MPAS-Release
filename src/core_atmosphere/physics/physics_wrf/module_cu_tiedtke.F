@@ -142,7 +142,7 @@ contains
                 ,its,ite, jts,jte, kts,kte                      &
                 ,rthcuten,rqvcuten,rqccuten,rqicuten            &
                 ,rucuten, rvcuten                               &
-                ,f_qv    ,f_qc    ,f_qr    ,f_qi    ,f_qs       &
+                ,f_qc ,f_qi                                     &
                                                                 )
 
 !-------------------------------------------------------------------
@@ -254,12 +254,9 @@ contains
 ! to determine at run-time whether a particular tracer is in
 ! use or not.
 !
-     logical, optional ::                                    &
-                                                   f_qv      &
-                                                  ,f_qc      &
-                                                  ,f_qr      &
-                                                  ,f_qi      &
-                                                  ,f_qs
+     logical, optional ::                               &
+                                        f_qc                            &
+                                       ,f_qi
  
 !--------------------------- local vars ------------------------------
 
@@ -564,6 +561,7 @@ contains
 !-----------------------------------------------------------------
       implicit none
 
+      integer lq,km,km1
       real pu(lq,km),pv(lq,km),pt(lq,km),pqv(lq,km),pqvf(lq,km)
       real poz(lq,km),pomg(lq,km),evap(lq),zprecc(lq),pqvbl(lq,km)
 
@@ -589,7 +587,7 @@ contains
 
       real psheat,psrain,psevap,psmelt,psdiss,tt
       real ztmst,ztpp1,fliq,fice,ztc,zalf
-      integer i,j,k,lq,lp,km,km1
+      integer i,j,k,lp
 !     real tlucua
 !     external tlucua
 

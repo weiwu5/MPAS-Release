@@ -14,9 +14,11 @@
  use mpas_atmphys_constants
  use mpas_atmphys_vars
 
-!wrf physics:
- use module_sf_mynn
+ use module_sf_mynn,only: sfclay_mynn
  use module_sf_sfclay
+ use module_sf_sfclayrev,only: sfclayrev
+ use sf_mynn,only: sf_mynn_init
+ use sf_sfclayrev,only: sf_sfclayrev_init
 
  implicit none
  private
@@ -78,7 +80,14 @@
 !   Laura D. Fowler (laura@ucar.edu) / 2016-10-18.
 ! * since we removed the local variable sfclayer_scheme from mpas_atmphys_vars.F, now defines sfclayer_scheme
 !   as a pointer to config_sfclayer_scheme.
-!   Laura D. Fowler (laura@ucar.edu) / 2917-02-16.
+!   Laura D. Fowler (laura@ucar.edu) / 2017-02-16.
+! * in subroutine driver_sfclayer, replaced the call to sfclay with a call to sfclayrev to use the revised
+!   version of the MONIN-OBUKHOV surface layer scheme.
+!   Laura D. Fowler (laura@ucar.edu) / 2023-05-15.
+! * added the option sf_monin_obukhov_rev to run the revised surface layer scheme with the YSU PBL scheme.
+!   Laura D. Fowler (laura@ucar.edu) / 2023-05-15.
+! * updated the MYNN surface layer scheme to the sourcecode available from WRF version 4.6.
+!   Laura D. Fowler (laura@ucar.edu) / 2024-02-14.
 
 
  contains
@@ -184,13 +193,24 @@
 
  sfclayer_select: select case (trim(sfclayer_scheme))
 
-    case("sf_monin_obukhov")
+    case("sf_monin_obukhov","sf_monin_obukhov_rev")
        if(.not.allocated(fh_p)) allocate(fh_p(ims:ime,jms:jme))
        if(.not.allocated(fm_p)) allocate(fm_p(ims:ime,jms:jme))
        if(config_frac_seaice) then
           if(.not.allocated(fh_sea)) allocate(fh_sea(ims:ime,jms:jme))
           if(.not.allocated(fm_sea)) allocate(fm_sea(ims:ime,jms:jme))
        endif
+
+       sfclayer2_select: select case(sfclayer_scheme)
+
+          case("sf_monin_obukhov_rev")
+             if(.not.allocated(waterdepth_p)) allocate(waterdepth_p(ims:ime,jms:jme))
+             if(.not.allocated(lakedepth_p) ) allocate(lakedepth_p(ims:ime,jms:jme) )
+             if(.not.allocated(lakemask_p)  ) allocate(lakemask_p(ims:ime,jms:jme)  )
+
+          case default
+
+       end select sfclayer2_select
 
     case("sf_mynn")
        if(.not.allocated(snowh_p)) allocate(snowh_p(ims:ime,jms:jme))
@@ -199,12 +219,6 @@
        if(config_frac_seaice) then
           if(.not.allocated(ch_sea)) allocate(ch_sea(ims:ime,jms:jme))
        endif
-
-       if(.not.allocated(cov_p)     ) allocate(cov_p(ims:ime,kms:kme,jms:jme)     )
-       if(.not.allocated(qsq_p)     ) allocate(qsq_p(ims:ime,kms:kme,jms:jme)     )
-       if(.not.allocated(tsq_p)     ) allocate(tsq_p(ims:ime,kms:kme,jms:jme)     )
-       if(.not.allocated(sh3d_p)    ) allocate(sh3d_p(ims:ime,kms:kme,jms:jme)    )
-       if(.not.allocated(elpbl_p)   ) allocate(elpbl_p(ims:ime,kms:kme,jms:jme)   )
 
     case default
 
@@ -301,13 +315,24 @@
 
  sfclayer_select: select case (trim(sfclayer_scheme))
 
-    case("sf_monin_obukhov")
+    case("sf_monin_obukhov","sf_monin_obukhov_rev")
        if(allocated(fh_p)) deallocate(fh_p)
        if(allocated(fm_p)) deallocate(fm_p)
        if(config_frac_seaice) then
           if(allocated(fh_sea)) deallocate(fh_sea)
           if(allocated(fm_sea)) deallocate(fm_sea)
        endif
+
+       sfclayer2_select: select case(sfclayer_scheme)
+
+          case("sf_monin_obukhov_rev")
+             if(allocated(waterdepth_p)) deallocate(waterdepth_p)
+             if(allocated(lakedepth_p) ) deallocate(lakedepth_p )
+             if(allocated(lakemask_p)  ) deallocate(lakemask_p  )
+
+          case default
+
+       end select sfclayer2_select
 
     case("sf_mynn")
        if(allocated(snowh_p)) deallocate(snowh_p)
@@ -316,12 +341,6 @@
        if(config_frac_seaice) then
           if(allocated(ch_sea)) deallocate(ch_sea)
        endif
-
-       if(allocated(cov_p)     ) deallocate(cov_p     )
-       if(allocated(qsq_p)     ) deallocate(qsq_p     )
-       if(allocated(tsq_p)     ) deallocate(tsq_p     )
-       if(allocated(sh3d_p)    ) deallocate(sh3d_p    )
-       if(allocated(elpbl_p)   ) deallocate(elpbl_p   )
 
     case default
 
@@ -361,7 +380,6 @@
 
 !local pointers specific to mynn:
  real(kind=RKIND),dimension(:),pointer:: ch,qcg,snowh
- real(kind=RKIND),dimension(:,:),pointer:: cov,el_pbl,qsq,sh3d,tsq
 
 !-----------------------------------------------------------------------------------------------------------------
 
@@ -516,7 +534,7 @@
 
  sfclayer_select: select case (trim(sfclayer_scheme))
 
-    case("sf_monin_obukhov")
+    case("sf_monin_obukhov","sf_monin_obukhov_rev")
        call mpas_pool_get_array(diag_physics,'fh',fh)
        call mpas_pool_get_array(diag_physics,'fm',fm)
 
@@ -531,17 +549,28 @@
        enddo
        enddo
 
+       sfclayer2_select: select case(sfclayer_scheme)
+
+          case("sf_monin_obukhov_rev")
+
+             do j = jts,jte
+             do i = its,ite
+                waterdepth_p(i,j) = 0._RKIND
+                lakedepth_p(i,j)  = 0._RKIND
+                lakemask_p(i,j)   = 0._RKIND
+             enddo
+             enddo
+
+          case default
+
+       end select sfclayer2_select
+
     case("sf_mynn")
        !input variables:
-       call mpas_pool_get_array(diag_physics,'qcg'   ,qcg   )
-       call mpas_pool_get_array(sfc_input   ,'snowh' ,snowh )
-       call mpas_pool_get_array(diag_physics,'cov'   ,cov   )
-       call mpas_pool_get_array(diag_physics,'el_pbl',el_pbl)
-       call mpas_pool_get_array(diag_physics,'qsq'   ,qsq   )
-       call mpas_pool_get_array(diag_physics,'sh3d'  ,sh3d  )
-       call mpas_pool_get_array(diag_physics,'tsq'   ,tsq   )
+       call mpas_pool_get_array(diag_physics,'qcg'  ,qcg  )
+       call mpas_pool_get_array(sfc_input   ,'snowh',snowh)
        !inout variables:
-       call mpas_pool_get_array(diag_physics,'ch',ch        )
+       call mpas_pool_get_array(diag_physics,'ch',ch)
 
        do j = jts,jte
        do i = its,ite
@@ -553,19 +582,6 @@
           if(config_frac_seaice) then
              ch_sea(i,j) = ch(i)
           endif
-       enddo
-       enddo
-
-       do j = jts,jte
-       do k = kts,kte
-       do i = its,ite
-          !input variables:
-          cov_p(i,k,j)      = cov(k,i)
-          qsq_p(i,k,j)      = qsq(k,i)
-          tsq_p(i,k,j)      = tsq(k,i)
-          sh3d_p(i,k,j)     = sh3d(k,i)
-          elpbl_p(i,k,j)    = el_pbl(k,i)
-       enddo
        enddo
        enddo
 
@@ -606,7 +622,6 @@
 
 !local pointers specific to mynn:
  real(kind=RKIND),dimension(:),pointer:: ch,qcg
- real(kind=RKIND),dimension(:,:),pointer:: cov,el_pbl,qsq,sh3d,tsq
 
 !-----------------------------------------------------------------------------------------------------------------
 
@@ -733,7 +748,7 @@
 
  sfclayer_select: select case (trim(sfclayer_scheme))
 
-    case("sf_monin_obukhov")
+    case("sf_monin_obukhov","sf_monin_obukhov_rev")
        call mpas_pool_get_array(diag_physics,'fh',fh)
        call mpas_pool_get_array(diag_physics,'fm',fm)
 
@@ -791,7 +806,15 @@
  logical, parameter:: allowed_to_read = .false. !actually not used in subroutine sfclayinit.
  character(len=StrKIND),pointer:: sfclayer_scheme
 
+!CCPP-compliant flags:
+ character(len=StrKIND):: errmsg
+ integer:: errflg
+
 !-----------------------------------------------------------------------------------------------------------------
+
+!initialization of CCPP-compliant flags:
+ errmsg = ' '
+ errflg = 0
 
  call mpas_pool_get_config(configs,'config_sfclayer_scheme',sfclayer_scheme)
 
@@ -800,8 +823,11 @@
     case("sf_monin_obukhov")
        call sfclayinit(allowed_to_read)
 
+    case("sf_monin_obukhov_rev")
+       call sf_sfclayrev_init(errmsg,errflg)
+
     case("sf_mynn")
-       call mynn_sf_init_driver(allowed_to_read)
+       call sf_mynn_init(errmsg,errflg)
 
     case default
 
@@ -833,9 +859,17 @@
  integer:: initflag
  real(kind=RKIND):: dx
 
+!CCPP-compliant flags:
+ character(len=StrKIND):: errmsg
+ integer:: errflg
+
 !-----------------------------------------------------------------------------------------------------------------
 !call mpas_log_write('')
 !call mpas_log_write('--- enter subroutine driver_sfclayer:')
+
+!initialization of CCPP-compliant flags:
+ errmsg = ' '
+ errflg = 0
 
  call mpas_pool_get_config(configs,'config_do_restart'     ,config_do_restart )
  call mpas_pool_get_config(configs,'config_frac_seaice'    ,config_frac_seaice)
@@ -854,12 +888,12 @@
  sfclayer_select: select case (trim(sfclayer_scheme))
 
     case("sf_monin_obukhov")
-       call mpas_timer_start('Monin-Obukhov')
+       call mpas_timer_start('sf_monin_obukhov')
        call sfclay( &
                    p3d      = pres_hyd_p , psfc     = psfc_p     , t3d      = t_p        , &
                    u3d      = u_p        , v3d      = v_p        , qv3d     = qv_p       , &
                    dz8w     = dz_p       , cp       = cp         , g        = gravity    , &
-                   rovcp    = rcp        , R        = R_d        , xlv      = xlv        , & 
+                   rovcp    = rcp        , R        = R_d        , xlv      = xlv        , &
                    chs      = chs_p      , chs2     = chs2_p     , cqs2     = cqs2_p     , &
                    cpm      = cpm_p      , znt      = znt_p      , ust      = ust_p      , &
                    pblh     = hpbl_p     , mavail   = mavail_p   , zol      = zol_p      , &
@@ -871,14 +905,13 @@
                    rmol     = rmol_p     , u10      = u10_p      , v10      = v10_p      , &
                    th2      = th2m_p     , t2       = t2m_p      , q2       = q2_p       , &
                    gz1oz0   = gz1oz0_p   , wspd     = wspd_p     , br       = br_p       , &
-                   isfflx   = isfflx     , dx       = dx         , svp1     = svp1       , &
+                   isfflx   = isfflx     , dx       = dx_p       , svp1     = svp1       , &
                    svp2     = svp2       , svp3     = svp3       , svpt0    = svpt0      , &
                    ep1      = ep_1       , ep2      = ep_2       , karman   = karman     , &
                    eomeg    = eomeg      , stbolt   = stbolt     , P1000mb  = P0         , &
-                   dxCell   = dx_p       , ustm     = ustm_p     , ck       = ck_p       , & 
-                   cka      = cka_p      , cd       = cd_p       , cda      = cda_p      , & 
-                   isftcflx = isftcflx   , iz0tlnd  = iz0tlnd    ,                         &
-                   scm_force_flux = scm_force_flux               ,                         & 
+                   ustm     = ustm_p     , ck       = ck_p       , cka      = cka_p      , &
+                   cd       = cd_p       , cda      = cda_p      , isftcflx = isftcflx   , &
+                   iz0tlnd  = iz0tlnd    , scm_force_flux = scm_force_flux               , &
                    ids = ids , ide = ide , jds = jds , jde = jde , kds = kds , kde = kde , &
                    ims = ims , ime = ime , jms = jms , jme = jme , kms = kms , kme = kme , &
                    its = its , ite = ite , jts = jts , jte = jte , kts = kts , kte = kte   &
@@ -901,87 +934,147 @@
                       rmol     = rmol_sea   , u10      = u10_sea    , v10      = v10_sea    , &
                       th2      = th2m_sea   ,  t2      = t2m_sea    , q2       = q2_sea     , &
                       gz1oz0   = gz1oz0_sea , wspd     = wspd_sea   , br       = br_sea     , &
-                      isfflx   = isfflx     , dx       = dx         , svp1     = svp1       , &
+                      isfflx   = isfflx     , dx       = dx_p       , svp1     = svp1       , &
                       svp2     = svp2       , svp3     = svp3       , svpt0    = svpt0      , &
                       ep1      = ep_1       , ep2      = ep_2       , karman   = karman     , &
                       eomeg    = eomeg      , stbolt   = stbolt     , P1000mb  = P0         , &
-                      dxCell   = dx_p       , ustm     = ustm_sea   , ck       = ck_sea     , &
-                      cka      = cka_sea    , cd       = cd_sea     , cda      = cda_sea    , &
-                      isftcflx = isftcflx   , iz0tlnd  = iz0tlnd    ,                         &
-                      scm_force_flux = scm_force_flux               ,                         &
+                      ustm     = ustm_sea   , ck       = ck_sea     , cka      = cka_sea    , &
+                      cd       = cd_sea     , cda      = cda_sea    , isftcflx = isftcflx   , &
+                      iz0tlnd  = iz0tlnd    , scm_force_flux = scm_force_flux               , &
                       ids = ids , ide = ide , jds = jds , jde = jde , kds = kds , kde = kde , &
                       ims = ims , ime = ime , jms = jms , jme = jme , kms = kms , kme = kme , &
                       its = its , ite = ite , jts = jts , jte = jte , kts = kts , kte = kte   &
                      )
        endif
-       call mpas_timer_stop('Monin-Obukhov')
+       call mpas_timer_stop('sf_monin_obukhov')
+
+    case("sf_monin_obukhov_rev")
+       call mpas_timer_start('sf_monin_obukhov_rev')
+       call sfclayrev( &
+               p3d          = pres_hyd_p     , psfc        = psfc_p       , t3d            = t_p            , &
+               u3d          = u_p            , v3d         = v_p          , qv3d           = qv_p           , &
+               dz8w         = dz_p           , cp          = cp           , g              = gravity        , &
+               rovcp        = rcp            , R           = R_d          , xlv            = xlv            , &
+               chs          = chs_p          , chs2        = chs2_p       , cqs2           = cqs2_p         , &
+               cpm          = cpm_p          , znt         = znt_p        , ust            = ust_p          , &
+               pblh         = hpbl_p         , mavail      = mavail_p     , zol            = zol_p          , &
+               mol          = mol_p          , regime      = regime_p     , psim           = psim_p         , &
+               psih         = psih_p         , fm          = fm_p         , fh             = fh_p           , &
+               xland        = xland_p        , hfx         = hfx_p        , qfx            = qfx_p          , &
+               lh           = lh_p           , tsk         = tsk_p        , flhc           = flhc_p         , &
+               flqc         = flqc_p         , qgh         = qgh_p        , qsfc           = qsfc_p         , &
+               rmol         = rmol_p         , u10         = u10_p        , v10            = v10_p          , &
+               th2          = th2m_p         , t2          = t2m_p        , q2             = q2_p           , &
+               gz1oz0       = gz1oz0_p       , wspd        = wspd_p       , br             = br_p           , &
+               isfflx       = isfflx         , dx          = dx_p         , svp1           = svp1           , &
+               svp2         = svp2           , svp3        = svp3         , svpt0          = svpt0          , &
+               ep1          = ep_1           , ep2         = ep_2         , karman         = karman         , &
+               p1000mb      = P0             , lakemask    = lakemask_p   , ustm           = ustm_p         , &
+               ck           = ck_p           , cka         = cka_p        , cd             = cd_p           , &
+               cda          = cda_p          , isftcflx    = isftcflx     , iz0tlnd        = iz0tlnd        , &
+               shalwater_z0 = shalwater_flag , water_depth = waterdepth_p , scm_force_flux = scm_force_flux , &
+               errmsg       = errmsg         , errflg      = errflg                                         , &
+               ids = ids , ide = ide , jds = jds , jde = jde , kds = kds , kde = kde                        , &
+               ims = ims , ime = ime , jms = jms , jme = jme , kms = kms , kme = kme                        , &
+               its = its , ite = ite , jts = jts , jte = jte , kts = kts , kte = kte                          &
+                     )
+
+       if(config_frac_seaice) then
+          call sfclayrev( &
+                  p3d          = pres_hyd_p     , psfc        = psfc_p       , t3d            = t_p            , &
+                  u3d          = u_p            , v3d         = v_p          , qv3d           = qv_p           , &
+                  dz8w         = dz_p           , cp          = cp           , g              = gravity        , &
+                  rovcp        = rcp            , R           = R_d          , xlv            = xlv            , &
+                  chs          = chs_sea        , chs2        = chs2_sea     , cqs2           = cqs2_sea       , &
+                  cpm          = cpm_sea        , znt         = znt_sea      , ust            = ust_sea        , &
+                  pblh         = hpbl_p         , mavail      = mavail_sea   , zol            = zol_sea        , &
+                  mol          = mol_sea        , regime      = regime_sea   , psim           = psim_sea       , &
+                  psih         = psih_sea       , fm          = fm_sea       , fh             = fh_sea         , &
+                  xland        = xland_sea      , hfx         = hfx_sea      , qfx            = qfx_sea        , &
+                  lh           = lh_sea         , tsk         = tsk_sea      , flhc           = flhc_sea       , &
+                  flqc         = flqc_sea       , qgh         = qgh_sea      , qsfc           = qsfc_sea       , &
+                  rmol         = rmol_sea       , u10         = u10_sea      , v10            = v10_sea        , &
+                  th2          = th2m_sea       , t2          = t2m_sea      , q2             = q2_sea         , &
+                  gz1oz0       = gz1oz0_sea     , wspd        = wspd_sea     , br             = br_sea         , &
+                  isfflx       = isfflx         , dx          = dx_p         , svp1           = svp1           , &
+                  svp2         = svp2           , svp3        = svp3         , svpt0          = svpt0          , &
+                  ep1          = ep_1           , ep2         = ep_2         , karman         = karman         , &
+                  p1000mb      = P0             , lakemask    = lakemask_p   , ustm           = ustm_sea       , &
+                  ck           = ck_sea         , cka         = cka_sea      , cd             = cd_sea         , &
+                  cda          = cda_sea        , isftcflx    = isftcflx     , iz0tlnd        = iz0tlnd        , &
+                  shalwater_z0 = shalwater_flag , water_depth = waterdepth_p , scm_force_flux = scm_force_flux , &
+                  errmsg       = errmsg         , errflg      = errflg                                         , &
+                  ids = ids , ide = ide , jds = jds , jde = jde , kds = kds , kde = kde                        , &
+                  ims = ims , ime = ime , jms = jms , jme = jme , kms = kms , kme = kme                        , &
+                  its = its , ite = ite , jts = jts , jte = jte , kts = kts , kte = kte                          &
+                        )
+       endif
+       call mpas_timer_stop('sf_monin_obukhov_rev')
 
     case("sf_mynn")
-       call mpas_timer_start('MYNN_sfclay')
+       call mpas_timer_start('sf_mynn')
        call sfclay_mynn( &
-                   p3d      = pres_hyd_p , pi3d     = pi_p       , psfcpa    = psfc_p     , &
-                   th3d     = th_p       , t3d      = t_p        , u3d       = u_p        , &
-                   v3d      = v_p        , qv3d     = qv_p       , qc3d      = qc_p       , &
-                   rho3d    = rho_p      , dz8w     = dz_p       , cp        = cp         , &
-                   g        = gravity    , rovcp    = rcp        , R         = R_d        , &
-                   xlv      = xlv        , chs      = chs_p      , chs2      = chs2_p     , &
-                   cqs2     = cqs2_p     , cpm      = cpm_p      , znt       = znt_p      , &
-                   ust      = ust_p      , pblh     = hpbl_p     , mavail    = mavail_p   , &
-                   zol      = zol_p      , mol      = mol_p      , regime    = regime_p   , &
-                   psim     = psim_p     , psih     = psih_p     , xland     = xland_p    , &
-                   hfx      = hfx_p      , qfx      = qfx_p      , lh        = lh_p       , &
-                   tsk      = tsk_p      , flhc     = flhc_p     , flqc      = flqc_p     , &
-                   qgh      = qgh_p      , qsfc     = qsfc_p     , rmol      = rmol_p     , &
-                   u10      = u10_p      , v10      = v10_p      , th2       = th2m_p     , &
-                   t2       = t2m_p      , q2       = q2_p       , snowh     = snowh_p    , &
-                   gz1oz0   = gz1oz0_p   , wspd     = wspd_p     , br        = br_p       , &
-                   isfflx   = isfflx     , dx       = dx         , svp1      = svp1       , &
-                   svp2     = svp2       , svp3     = svp3       , svpt0     = svpt0      , &
-                   ep1      = ep_1       , ep2      = ep_2       , karman    = karman     , &
-                   dxCell   = dx_p       , ustm     = ustm_p     , ck        = ck_p       , &
-                   cka      = cka_p      , cd       = cd_p       , cda       = cda_p      , &
-                   isftcflx = isftcflx   , iz0tlnd  = iz0tlnd    , itimestep = initflag   , &
-                   ch       = ch_p       , cov      = cov_p      , tsq       = tsq_p      , &
-                   qsq      = qsq_p      , sh3d     = sh3d_p     , el_pbl    = elpbl_p    , &
-                   qcg      = qcg_p      , bl_mynn_cloudpdf = bl_mynn_cloudpdf            , &
-                   ids = ids , ide = ide , jds = jds , jde = jde , kds = kds , kde = kde  , &
-                   ims = ims , ime = ime , jms = jms , jme = jme , kms = kms , kme = kme  , &
-                   its = its , ite = ite , jts = jts , jte = jte , kts = kts , kte = kte    &
+                   p3d      = pres_hyd_p , pi3d      = pi_p     , psfcpa   = psfc_p      , &
+                   th3d     = th_p       , t3d       = t_p      , u3d      = u_p         , &
+                   v3d      = v_p        , qv3d      = qv_p     , qc3d     = qc_p        , &
+                   rho3d    = rho_p      , dz8w      = dz_p     , cp       = cp          , &
+                   g        = gravity    , rovcp     = rcp      , R        = R_d         , &
+                   xlv      = xlv        , chs       = chs_p    , chs2     = chs2_p      , &
+                   cqs2     = cqs2_p     , cpm       = cpm_p    , znt      = znt_p       , &
+                   ust      = ust_p      , pblh      = hpbl_p   , mavail   = mavail_p    , &
+                   zol      = zol_p      , mol       = mol_p    , regime   = regime_p    , &
+                   psim     = psim_p     , psih      = psih_p   , xland    = xland_p     , &
+                   hfx      = hfx_p      , qfx       = qfx_p    , lh       = lh_p        , &
+                   tsk      = tsk_p      , flhc      = flhc_p   , flqc     = flqc_p      , &
+                   qgh      = qgh_p      , qsfc      = qsfc_p   , rmol     = rmol_p      , &
+                   u10      = u10_p      , v10       = v10_p    , th2      = th2m_p      , &
+                   t2       = t2m_p      , q2        = q2_p     , snowh    = snowh_p     , &
+                   gz1oz0   = gz1oz0_p   , wspd      = wspd_p   , br       = br_p        , &
+                   isfflx   = isfflx     , dx        = dx_p     , svp1     = svp1        , &
+                   svp2     = svp2       , svp3      = svp3     , svpt0    = svpt0       , &
+                   ep1      = ep_1       , ep2       = ep_2     , karman   = karman      , &
+                   ustm     = ustm_p     , ck        = ck_p     , cka      = cka_p       , &
+                   cd       = cd_p       , cda       = cda_p    , ch       = ch_p        , &
+                   qcg      = qcg_p      , spp_pbl   = spp_pbl  , isftcflx = isftcflx    , &
+                   iz0tlnd  = iz0tlnd    , itimestep = initflag                          , &
+                   errmsg   = errmsg     , errflg    = errflg                            , &
+                   ids = ids , ide = ide , jds = jds , jde = jde , kds = kds , kde = kde , &
+                   ims = ims , ime = ime , jms = jms , jme = jme , kms = kms , kme = kme , &
+                   its = its , ite = ite , jts = jts , jte = jte , kts = kts , kte = kte   &
                        )
 
        if(config_frac_seaice) then
           call sfclay_mynn( &
-                      p3d      = pres_hyd_p , pi3d     = pi_p       , psfcpa    = psfc_p     , &
-                      th3d     = th_p       , t3d      = t_p        , u3d       = u_p        , &
-                      v3d      = v_p        , qv3d     = qv_p       , qc3d      = qc_p       , &
-                      rho3d    = rho_p      , dz8w     = dz_p       , cp        = cp         , &
-                      g        = gravity    , rovcp    = rcp        , R         = R_d        , &
-                      xlv      = xlv        , chs      = chs_sea    , chs2      = chs2_sea   , &
-                      cqs2     = cqs2_sea   , cpm      = cpm_sea    , znt       = znt_sea    , &
-                      ust      = ust_sea    , pblh     = hpbl_p     , mavail    = mavail_sea , &
-                      zol      = zol_sea    , mol      = mol_sea    , regime    = regime_sea , &
-                      psim     = psim_sea   , psih     = psih_sea   , xland     = xland_sea  , &
-                      hfx      = hfx_sea    , qfx      = qfx_sea    , lh        = lh_sea     , &
-                      tsk      = tsk_sea    , flhc     = flhc_sea   , flqc      = flqc_sea   , &
-                      qgh      = qgh_sea    , qsfc     = qsfc_sea   , rmol      = rmol_sea   , &
-                      u10      = u10_sea    , v10      = v10_sea    , th2       = th2m_sea   , &
-                      t2       = t2m_sea    , q2       = q2_sea     , snowh     = snowh_p    , &
-                      gz1oz0   = gz1oz0_sea , wspd     = wspd_sea   , br        = br_sea     , &
-                      isfflx   = isfflx     , dx       = dx         , svp1      = svp1       , &
-                      svp2     = svp2       , svp3     = svp3       , svpt0     = svpt0      , &
-                      ep1      = ep_1       , ep2      = ep_2       , karman    = karman     , &
-                      dxCell   = dx_p       , ustm     = ustm_sea   , ck        = ck_sea     , &
-                      cka      = cka_sea    , cd       = cd_sea     , cda       = cda_sea    , &
-                      isftcflx = isftcflx   , iz0tlnd  = iz0tlnd    , itimestep = initflag   , &
-                      ch       = ch_sea     , cov      = cov_p      , tsq       = tsq_p      , &
-                      qsq      = qsq_p      , sh3d     = sh3d_p     , el_pbl    = elpbl_p    , &
-                      qcg      = qcg_p      , bl_mynn_cloudpdf = bl_mynn_cloudpdf            , &
-                      ids = ids , ide = ide , jds = jds , jde = jde , kds = kds , kde = kde  , &
-                      ims = ims , ime = ime , jms = jms , jme = jme , kms = kms , kme = kme  , &
-                      its = its , ite = ite , jts = jts , jte = jte , kts = kts , kte = kte    &
+                      p3d      = pres_hyd_p , pi3d      = pi_p     , psfcpa   = psfc_p      , &
+                      th3d     = th_p       , t3d       = t_p      , u3d      = u_p         , &
+                      v3d      = v_p        , qv3d      = qv_p     , qc3d     = qc_p        , &
+                      rho3d    = rho_p      , dz8w      = dz_p     , cp       = cp          , &
+                      g        = gravity    , rovcp     = rcp      , R        = R_d         , &
+                      xlv      = xlv        , chs       = chs_sea  , chs2     = chs2_sea    , &
+                      cqs2     = cqs2_sea   , cpm       = cpm_sea  , znt      = znt_sea     , &
+                      ust      = ust_sea    , pblh      = hpbl_p   , mavail   = mavail_sea  , &
+                      zol      = zol_sea    , mol       = mol_sea  , regime   = regime_sea  , &
+                      psim     = psim_sea   , psih      = psih_sea , xland    = xland_sea   , &
+                      hfx      = hfx_sea    , qfx       = qfx_sea  , lh       = lh_sea      , &
+                      tsk      = tsk_sea    , flhc      = flhc_sea , flqc     = flqc_sea    , &
+                      qgh      = qgh_sea    , qsfc      = qsfc_sea , rmol     = rmol_sea    , &
+                      u10      = u10_sea    , v10       = v10_sea  , th2      = th2m_sea    , &
+                      t2       = t2m_sea    , q2        = q2_sea   , snowh    = snowh_p     , &
+                      gz1oz0   = gz1oz0_sea , wspd      = wspd_sea , br       = br_sea      , &
+                      isfflx   = isfflx     , dx        = dx_p     , svp1     = svp1        , &
+                      svp2     = svp2       , svp3      = svp3     , svpt0    = svpt0       , &
+                      ep1      = ep_1       , ep2       = ep_2     , karman   = karman      , &
+                      ustm     = ustm_sea   , ck        = ck_sea   , cka      = cka_sea     , &
+                      cd       = cd_sea     , cda       = cda_sea  , ch       = ch_sea      , &
+                      qcg      = qcg_p      , spp_pbl   = spp_pbl  , isftcflx = isftcflx    , &
+                      iz0tlnd  = iz0tlnd    , itimestep = initflag                          , &
+                      errmsg   = errmsg     , errflg    = errflg                            , &
+                      ids = ids , ide = ide , jds = jds , jde = jde , kds = kds , kde = kde , &
+                      ims = ims , ime = ime , jms = jms , jme = jme , kms = kms , kme = kme , &
+                      its = its , ite = ite , jts = jts , jte = jte , kts = kts , kte = kte   &
                           )
        endif
-       call mpas_timer_stop('MYNN_sfclay')
+       call mpas_timer_stop('sf_mynn')
 
     case default
 
